@@ -1,0 +1,18 @@
+spring:
+    application:
+        name: trip-dispatch-service
+    config:
+      import: optional:configserver:http://localhost:8888/
+    kafka:
+      bootstrap-servers: localhost:9092
+      producer:
+        key-serializer: org.apache.kafka.common.serialization.StringSerializer
+        value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+
+jwt-secret: chukibimatdetaorachuoitokenphaidudaineukhongsebinemloi
+
+services:
+  pricing-service:
+    url: http://localhost:8083/api/v1/pricing/calculate
+  payment:
+    url: http://localhost:8084/api/v1/wallets/check-balance
