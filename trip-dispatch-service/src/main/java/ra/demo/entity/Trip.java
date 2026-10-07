@@ -29,12 +29,12 @@ public class Trip {
     @Column(name = "driver_id")
     private Long driverId; // Null khi mới tạo (REQUESTED)
 
-    // --- Địa điểm đón / trả (CHỈ TÊN ĐỊA CHỈ) ---
+    // --- Địa điểm đón / trả ---
     @Column(name = "pickup_address", nullable = false)
-    private String pickupAddress; // ✅ "123 Nguyen Hue, Da Nang"
+    private String pickupAddress; // Tên địa chỉ điểm đón
 
     @Column(name = "dropoff_address", nullable = false)
-    private String dropoffAddress; // ✅ "Hai Van Pass, Da Nang"
+    private String dropoffAddress; // Tên địa chỉ điểm trả
 
     // --- Thông tin chuyến đi ---
     @Enumerated(EnumType.STRING)
@@ -42,14 +42,14 @@ public class Trip {
     private VehicleType vehicleType; // BIKE, CAR_4_SEATS, CAR_7_SEATS
 
     @Column(name = "distance_km")
-    private Double distanceKm; // Từ Pricing Service
+    private Double distanceKm; // Khoảng cách (km)
 
     @Column(name = "duration_minutes")
-    private Integer durationMinutes; // Từ Pricing Service
+    private Integer durationMinutes; // Thời gian dự kiến (phút)
 
     // --- Giá tiền & Thanh toán ---
     @Column(name = "fare_amount", nullable = false)
-    private BigDecimal fareAmount; // Từ Pricing Service
+    private BigDecimal fareAmount; // Tổng tiền cước
 
     @Column(name = "payment_method")
     private PaymentMethod paymentMethod; // CASH, WALLET
