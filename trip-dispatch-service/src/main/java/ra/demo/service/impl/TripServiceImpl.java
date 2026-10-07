@@ -74,21 +74,11 @@ public class TripServiceImpl implements TripService {
         CalculateFareRequest fareRequest = CalculateFareRequest.builder()
                 .pickupAddress(request.getPickupAddress())
                 .dropoffAddress(request.getDropoffAddress())
-                .pickupLat(request.getPickupLatitude())
-                .pickupLng(request.getPickupLongitude())
-                .dropoffLat(request.getDropoffLatitude())
-                .dropoffLng(request.getDropoffLongitude())
                 .vehicleType(request.getVehicleType())
                 .build();
 
         Double distanceKm = 0.0;
         BigDecimal fareAmount = BigDecimal.ZERO;
-
-        // Lưu trữ tọa độ thực tế sau khi Pricing Service định vị xong
-        Double finalPickupLat = request.getPickupLatitude();
-        Double finalPickupLng = request.getPickupLongitude();
-        Double finalDropoffLat = request.getDropoffLatitude();
-        Double finalDropoffLng = request.getDropoffLongitude();
 
         try {
             log.info("[TRIP SERVICE] Gọi sang Pricing Service tại URL: {}", pricingServiceUrl);
@@ -106,11 +96,6 @@ public class TripServiceImpl implements TripService {
                 distanceKm = fareResponse.getDistanceKm();
                 fareAmount = fareResponse.getFareAmount();
 
-                // Lấy tọa độ thực tế mà Pricing Service đã tìm được từ địa chỉ ping
-                if (fareResponse.getPickupLat() != null) finalPickupLat = fareResponse.getPickupLat();
-                if (fareResponse.getPickupLng() != null) finalPickupLng = fareResponse.getPickupLng();
-                if (fareResponse.getDropoffLat() != null) finalDropoffLat = fareResponse.getDropoffLat();
-                if (fareResponse.getDropoffLng() != null) finalDropoffLng = fareResponse.getDropoffLng();
 
                 log.info("[TÍNH CƯỚC THÀNH CÔNG] Quãng đường: {} km | Cước phí: {} VNĐ", distanceKm, fareAmount);
             } else {
