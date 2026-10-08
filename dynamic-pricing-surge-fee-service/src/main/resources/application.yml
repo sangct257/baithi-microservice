@@ -1,5 +1,8 @@
+locationiq:
+    api:
+        key: pk.7939da0d43354ae446e39ac07086b84f
 spring:
     application:
         name: dynamic-pricing-surge-fee-service
     config:
-      import: optional:configserver:http://localhost:8888/
+        import: optional:configserver:http://localhost:8888/

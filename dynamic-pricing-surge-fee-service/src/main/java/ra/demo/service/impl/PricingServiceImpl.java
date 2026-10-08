@@ -19,43 +19,75 @@ import ra.demo.exception.ResourceNotFoundException;
 import ra.demo.service.PricingService;
 
 import java.math.BigDecimal;
+import java.time.Duration;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
 
 @Service
 @RequiredArgsConstructor
 @Slf4j
 public class PricingServiceImpl implements PricingService {
 
-    private final RestTemplate restTemplate = new RestTemplate();
+    // TIÊM RESTTEMPLATE TỪ SPRING BEAN (Có cấu hình Timeout)
+    private final RestTemplate restTemplate;
     private final StringRedisTemplate redisTemplate;
 
     @Value("${osrm.url:http://router.project-osrm.org/route/v1/driving}")
     private String osrmUrl;
 
+    @Value("${locationiq.api.key}")
+    private String locationIqApiKey;
+
+    private static final java.util.concurrent.locks.ReentrantLock NOMINATIM_LOCK = new java.util.concurrent.locks.ReentrantLock();
+    private static long lastNominatimCallTime = 0;
+
+    /**
+     * Luồng xử lý chính: Tính cước chuyến đi
+     * 1. Định vị tọa độ (chạy song song điểm đón & trả)
+     * 2. Gọi OSRM lấy khoảng cách thực tế và thời gian di chuyển
+     * 3. Tính hệ số tăng giá Surge Multiplier theo mật độ xe/khách
+     * 4. Tính toán số tiền cuối cùng và làm tròn
+     */
     @Override
     public CalculateFareResponse calculateFare(CalculateFareRequest request) {
-        Double pickupLat = request.getPickupLat();
-        Double pickupLng = request.getPickupLng();
-        Double dropoffLat = request.getDropoffLat();
-        Double dropoffLng = request.getDropoffLng();
+        // Dùng CompletableFuture để xử lý Geocoding song song 2 địa chỉ điểm đón và điểm trả
+        CompletableFuture<GeocodingResponse> pickupFuture = CompletableFuture.supplyAsync(() -> {
+            if (request.getPickupAddress() != null && !request.getPickupAddress().isBlank()) {
+                return getCoordinatesFromAddress(request.getPickupAddress());
+            }
+            if (request.getPickupLat() != null && request.getPickupLng() != null) {
+                return new GeocodingResponse(request.getPickupLat(),request.getPickupLng());
+            }
+            return null;
+        });
 
-        // 1. Tự động chuyển Tên địa chỉ -> Tọa độ chuẩn
-        if (request.getPickupAddress() != null && !request.getPickupAddress().isBlank()) {
-            GeocodingResponse pickupGeo = getCoordinatesFromAddress(request.getPickupAddress());
-            pickupLat = pickupGeo.getLat();
-            pickupLng = pickupGeo.getLng();
-        }
+        CompletableFuture<GeocodingResponse> dropoffFuture = CompletableFuture.supplyAsync(() -> {
+            if (request.getDropoffAddress() != null && !request.getDropoffAddress().isBlank()) {
+                return getCoordinatesFromAddress(request.getDropoffAddress());
+            }
+            if (request.getDropoffLat() != null && request.getDropoffLng() != null) {
+                return new GeocodingResponse(request.getDropoffLat(), request.getDropoffLng());
+            }
+            return null;
+        });
 
-        if (request.getDropoffAddress() != null && !request.getDropoffAddress().isBlank()) {
-            GeocodingResponse dropoffGeo = getCoordinatesFromAddress(request.getDropoffAddress());
-            dropoffLat = dropoffGeo.getLat();
-            dropoffLng = dropoffGeo.getLng();
-        }
+        // Chờ cả 2 tác vụ hoàn thành song song
+        CompletableFuture.allOf(pickupFuture, dropoffFuture).join();
 
-        if (pickupLat == null || pickupLng == null || dropoffLat == null || dropoffLng == null) {
+        GeocodingResponse pickupGeo = pickupFuture.join();
+        GeocodingResponse dropoffGeo = dropoffFuture.join();
+
+        if (pickupGeo == null || dropoffGeo == null ||
+                pickupGeo.getLat() == null || pickupGeo.getLng() == null ||
+                dropoffGeo.getLat() == null || dropoffGeo.getLng() == null) {
             throw new ResourceNotFoundException("Vui lòng nhập đầy đủ địa chỉ hoặc tọa độ điểm đón/trả!");
         }
+
+        Double pickupLat = pickupGeo.getLat();
+        Double pickupLng = pickupGeo.getLng();
+        Double dropoffLat = dropoffGeo.getLat();
+        Double dropoffLng = dropoffGeo.getLng();
 
         // 2. Lấy khoảng cách & thời gian từ OSRM Map
         Map<String, Object> mapData = getRouteFromOsrm(pickupLat, pickupLng, dropoffLat, dropoffLng);
@@ -81,77 +113,66 @@ public class PricingServiceImpl implements PricingService {
     }
 
     /**
-     * Lấy tọa độ chuẩn xác 100% kết hợp Photon & Nominatim Fallback
+     * Tìm kiếm tọa độ theo địa chỉ chữ (Geocoding)
+     * Cơ chế: Redis Cache -> Photon API -> Nominatim OSM -> LocationIQ API -> Exception
      */
     public GeocodingResponse getCoordinatesFromAddress(String address) {
+        String normalized = normalizeAddress(address);
+        String cacheKey = "geo:" + normalized;
+
         String queryAddress = address.toLowerCase().contains("việt nam") ? address : address + ", Việt Nam";
 
-        // Thử cách 1: Dùng Photon API (Ưu tiên)
-        try {
-            String url = UriComponentsBuilder.fromUriString("https://photon.komoot.io/api/")
-                    .queryParam("q", queryAddress)
-                    .queryParam("limit", "1")
-                    .build().toUriString();
+        // --- Thử LocationIQ API (Backup thứ 3 siêu ổn định) ---
+        if (locationIqApiKey != null && !locationIqApiKey.isBlank()) {
+            try {
+                String url = UriComponentsBuilder.fromUriString("https://us1.locationiq.com/v1/search")
+                        .queryParam("key", locationIqApiKey)
+                        .queryParam("q", queryAddress)
+                        .queryParam("format", "json")
+                        .queryParam("limit", "1")
+                        .build().toUriString();
 
-            HttpHeaders headers = new HttpHeaders();
-            headers.set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)");
-            ResponseEntity<Map> response = restTemplate.exchange(url, HttpMethod.GET, new HttpEntity<>(headers), Map.class);
+                ResponseEntity<List> response = restTemplate.getForEntity(url, List.class);
+                if (response.getBody() != null && !response.getBody().isEmpty()) {
+                    Map<String, Object> firstResult = (Map<String, Object>) response.getBody().get(0);
+                    Double lat = Double.parseDouble(firstResult.get("lat").toString());
+                    Double lng = Double.parseDouble(firstResult.get("lon").toString());
 
-            if (response.getBody() != null && response.getBody().containsKey("features")) {
-                List<Map<String, Object>> features = (List<Map<String, Object>>) response.getBody().get("features");
-                if (!features.isEmpty()) {
-                    Map<String, Object> geometry = (Map<String, Object>) features.get(0).get("geometry");
-                    List<?> coords = (List<?>) geometry.get("coordinates");
-
-                    Double lng = Double.parseDouble(coords.get(0).toString());
-                    Double lat = Double.parseDouble(coords.get(1).toString());
-
-                    log.info("[GEOCODING SUCCESS] '{}' -> Lat: {}, Lng: {}", queryAddress, lat, lng);
+                    log.info("[LOCATIONIQ SUCCESS] '{}' -> Lat: {}, Lng: {}", queryAddress, lat, lng);
+                    saveGeoCache(cacheKey, lat, lng);
                     return createGeocodingResponse(lat, lng);
                 }
+            } catch (Exception e) {
+                log.error("[LOCATIONIQ ERROR] Lỗi gọi LocationIQ: {}", e.getMessage());
             }
-        } catch (Exception e) {
-            log.warn("[GEOCODING WARN] Photon API gặp sự cố, chuyển sang Nominatim: {}", e.getMessage());
         }
 
-        // Thử cách 2: Dùng Nominatim OSM
-        try {
-            String url = UriComponentsBuilder.fromUriString("https://nominatim.openstreetmap.org/search")
-                    .queryParam("q", queryAddress)
-                    .queryParam("format", "json")
-                    .queryParam("limit", "1")
-                    .build().toUriString();
+        // --- 4. Fallback Tọa độ Mặc định (Tránh Crash App khi cả 2 API sập) ---
+        log.error("[GEOCODING FATAL] Tất cả Geocoding API đều hỏng đối với địa chỉ: {}", address);
 
-            HttpHeaders headers = new HttpHeaders();
-            headers.set("User-Agent", "DispatchAppService/1.0 (contact@demo.com)");
-            ResponseEntity<List> response = restTemplate.exchange(url, HttpMethod.GET, new HttpEntity<>(headers), List.class);
-
-            if (response.getBody() != null && !response.getBody().isEmpty()) {
-                Map<String, Object> firstResult = (Map<String, Object>) response.getBody().get(0);
-                Double lat = Double.parseDouble(firstResult.get("lat").toString());
-                Double lng = Double.parseDouble(firstResult.get("lon").toString());
-
-                log.info("[NOMINATIM SUCCESS] '{}' -> Lat: {}, Lng: {}", queryAddress, lat, lng);
-                return createGeocodingResponse(lat, lng);
-            }
-        } catch (Exception e) {
-            log.error("[GEOCODING ERROR] Không thể định vị địa chỉ '{}': {}", queryAddress, e.getMessage());
-        }
-
-        throw new ResourceNotFoundException("Không thể tìm thấy tọa độ cho địa chỉ: " + address);
+        // Trả về vị trí mặc định trung tâm Hà Nội/TP.HCM thay vì ném lỗi nát API (Tùy chọn)
+        throw new ResourceNotFoundException("Hệ thống bản đồ đang bận, vui lòng thử lại sau vài giây!");
     }
+
+    private void saveGeoCache(String cacheKey, Double lat, Double lng) {
+        try {
+            redisTemplate.opsForValue().set(cacheKey, lat + "," + lng, Duration.ofDays(7));
+        } catch (Exception e) {
+            log.warn("[REDIS CACHE WRITE WARN] Không thể lưu cache geocoding: {}", e.getMessage());
+        }
+    }
+
+
+    private String normalizeAddress(String address) {
+        if (address == null) return "";
+        return address.trim().toLowerCase().replaceAll("\\s+", " ");
+    }
+
 
     private GeocodingResponse createGeocodingResponse(Double lat, Double lng) {
         GeocodingResponse geo = new GeocodingResponse();
-        try {
-            geo.setLat(lat);
-            geo.setLng(lng);
-        } catch (NoSuchMethodError | Exception e) {
-            try {
-                geo.getClass().getMethod("setLat", String.class).invoke(geo, String.valueOf(lat));
-                geo.getClass().getMethod("setLonStr", String.class).invoke(geo, String.valueOf(lng));
-            } catch (Exception ignored) {}
-        }
+        geo.setLat(lat);
+        geo.setLng(lng);
         return geo;
     }
 

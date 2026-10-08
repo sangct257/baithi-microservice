@@ -20,11 +20,7 @@ public class TripResponse {
     private Long customerId;
     private Long driverId;
     private String pickupAddress;
-    private Double pickupLatitude;
-    private Double pickupLongitude;
     private String dropoffAddress;
-    private Double dropoffLatitude;
-    private Double dropoffLongitude;
     private VehicleType vehicleType;
     private Double distanceKm;
     private BigDecimal fareAmount;
