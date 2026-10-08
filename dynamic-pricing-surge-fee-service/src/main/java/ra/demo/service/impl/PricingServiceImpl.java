@@ -39,9 +39,6 @@ public class PricingServiceImpl implements PricingService {
     @Value("${locationiq.api.key}")
     private String locationIqApiKey;
 
-    private static final java.util.concurrent.locks.ReentrantLock NOMINATIM_LOCK = new java.util.concurrent.locks.ReentrantLock();
-    private static long lastNominatimCallTime = 0;
-
     /**
      * Luồng xử lý chính: Tính cước chuyến đi
      * 1. Định vị tọa độ (chạy song song điểm đón & trả)
