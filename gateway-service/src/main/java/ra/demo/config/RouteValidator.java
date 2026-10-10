@@ -47,6 +47,16 @@ public class RouteValidator {
             new RouteRule("/user-service/api/v1/driver/profile", List.of("POST", "GET"), List.of("ROLE_DRIVER")),
             new RouteRule("/user-service/api/v1/driver/status", List.of("PATCH"), List.of("ROLE_DRIVER")),
 
+            // ==================== LOCATION TELEMETRY SERVICE (BỔ SUNG) ====================
+            // 1. Tài xế cập nhật tọa độ GPS (POST /location-telemetry-tracking-service/api/v1/location/update)
+            new RouteRule("/location-telemetry-tracking-service/api/v1/location/update", List.of("POST"), List.of("ROLE_DRIVER")),
+
+            // 2. Tìm tài xế xung quanh (GET /location-telemetry-tracking-service/api/v1/location/nearby) -> Dành cho Khách đặt xe
+            new RouteRule("/location-telemetry-tracking-service/api/v1/location/nearby", List.of("GET"), List.of("ROLE_CUSTOMER", "ROLE_ADMIN")),
+
+            // 3. Lấy vị trí hiện tại của 1 tài xế cụ thể
+            new RouteRule("/location-telemetry-tracking-service/api/v1/location/driver/*", List.of("GET"), List.of("ROLE_DRIVER", "ROLE_CUSTOMER", "ROLE_ADMIN")),
+
             // 1. Đặt chuyến đi
             new RouteRule("/trip-dispatch-service/api/v1/trips", List.of("POST"), List.of("ROLE_CUSTOMER")),
             // 2. Lịch sử chuyến đi của khách

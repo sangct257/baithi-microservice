@@ -4,9 +4,20 @@ spring:
     bootstrap-servers: localhost:9092
     producer:
       key-serializer: org.apache.kafka.common.serialization.StringSerializer
-      value-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+    consumer:
+      group-id: notification-dispatch-group
+      # Khi bạn restart websocket-gateway-service, Kafka Consumer tham gia group sau khi trip-dispatch-service đã gửi tin vào Kafka. Giá trị latest bảo Kafka: "Hãy bỏ qua tất cả tin cũ, chỉ chờ tin mới!" $\rightarrow$ Chuyến #25 vừa tạo sẽ bị bỏ qua hoàn toàn.
+      auto-offset-reset: latest
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
+      properties:
+        spring.json.trusted.packages: "*"
+        spring.json.value.default.type: ra.demo.dto.request.RideRequestEvent
+        spring.json.use.type.headers: false   # BẮT BUỘC: Bỏ qua kiểm tra Package Class trùng khớp giữa 2 service!
+
 server:
-  port: 8085
+  port: 8086
 
 eureka:
   client:

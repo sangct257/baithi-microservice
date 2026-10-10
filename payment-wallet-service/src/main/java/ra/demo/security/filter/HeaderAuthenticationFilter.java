@@ -1,4 +1,4 @@
-package ra.demo.security.fillter;
+package ra.demo.security.filter;
 
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;

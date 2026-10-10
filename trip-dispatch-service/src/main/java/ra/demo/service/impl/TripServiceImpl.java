@@ -15,10 +15,8 @@ import org.springframework.web.client.RestTemplate;
 import ra.demo.constants.TripStatus;
 import ra.demo.dto.request.CalculateFareRequest;
 import ra.demo.dto.request.CreateTripRequest;
-import ra.demo.dto.response.ApiResponse;
-import ra.demo.dto.response.CalculateFareResponse;
-import ra.demo.dto.response.TripResponse;
-import ra.demo.dto.response.WalletBalanceCheckResponse;
+import ra.demo.dto.request.RideRequestEvent;
+import ra.demo.dto.response.*;
 import ra.demo.entity.Trip;
 import ra.demo.event.PaymentHoldEvent;
 import ra.demo.event.TripCanceledEvent;
@@ -42,10 +40,10 @@ public class TripServiceImpl implements TripService {
     private final TripRepository tripRepository;
     private final KafkaTemplate<String, Object> kafkaTemplate;
 
-    @Value("${services.pricing.url:http://localhost:8083/api/v1/pricing/calculate}")
+    @Value("${services.pricing-service.url}")
     private String pricingServiceUrl;
 
-    @Value("${services.payment.url:http://localhost:8084/api/v1/wallets/check-balance}")
+    @Value("${services.payment-service.url}")
     private String paymentServiceUrl;
 
     private static final Set<TripStatus> ACTIVE_STATUSES = Set.of(
@@ -70,7 +68,7 @@ public class TripServiceImpl implements TripService {
             throw new TripException("Bạn đang có một chuyến đi chưa hoàn thành. Không thể đặt thêm!");
         }
 
-        // 2. [MỚI] Chuẩn bị request tính giá: Truyền tên địa chỉ ping để Pricing Service tự lấy tọa độ
+        // 2. Chuẩn bị request tính giá: Truyền tên địa chỉ để Pricing Service tính tiền & trả về Tọa độ
         CalculateFareRequest fareRequest = CalculateFareRequest.builder()
                 .pickupAddress(request.getPickupAddress())
                 .dropoffAddress(request.getDropoffAddress())
@@ -79,6 +77,10 @@ public class TripServiceImpl implements TripService {
 
         Double distanceKm = 0.0;
         BigDecimal fareAmount = BigDecimal.ZERO;
+        Double pickupLat = null;
+        Double pickupLng = null;
+        Double dropoffLat = null;
+        Double dropoffLng = null;
 
         try {
             log.info("[TRIP SERVICE] Gọi sang Pricing Service tại URL: {}", pricingServiceUrl);
@@ -88,7 +90,8 @@ public class TripServiceImpl implements TripService {
                     pricingServiceUrl,
                     HttpMethod.POST,
                     entity,
-                    new ParameterizedTypeReference<ApiResponse<CalculateFareResponse>>() {}
+                    new ParameterizedTypeReference<ApiResponse<CalculateFareResponse>>() {
+                    }
             );
 
             if (responseEntity.getBody() != null && responseEntity.getBody().getData() != null) {
@@ -96,8 +99,14 @@ public class TripServiceImpl implements TripService {
                 distanceKm = fareResponse.getDistanceKm();
                 fareAmount = fareResponse.getFareAmount();
 
+                // Lấy tọa độ chuẩn hóa đã qua Geocoding từ Pricing Service
+                pickupLat = fareResponse.getPickupLat();
+                pickupLng = fareResponse.getPickupLng();
+                dropoffLat = fareResponse.getDropoffLat();
+                dropoffLng = fareResponse.getDropoffLng();
 
-                log.info("[TÍNH CƯỚC THÀNH CÔNG] Quãng đường: {} km | Cước phí: {} VNĐ", distanceKm, fareAmount);
+                log.info("[TÍNH CƯỚC THÀNH CÔNG] Quãng đường: {} km | Cước phí: {} VNĐ | Tọa độ đón: {},{}",
+                        distanceKm, fareAmount, pickupLat, pickupLng);
             } else {
                 throw new TripException("Không thể lấy thông tin cước phí từ hệ thống tính giá.");
             }
@@ -139,6 +148,65 @@ public class TripServiceImpl implements TripService {
 
             kafkaTemplate.send("trip-created-topic", holdEvent);
             log.info("[KAFKA SEND] Đã gửi Event Giữ tiền cho Chuyến #{}", savedTrip.getId());
+        }
+
+        // 6. TÌM TÀI XẾ XUNG QUANH BÁN KÍNH 3.0 KM & BẮN EVENT PHÁT CHUYẾN (DISPATCH)
+        if (pickupLat != null && pickupLng != null) {
+            try {
+                log.info("[DISPATCH START] Bắt đầu tìm tài xế xung quanh cho Chuyến #{}: Lat={}, Lng={}",
+                        savedTrip.getId(), pickupLat, pickupLng);
+
+                String locationUrl = String.format(java.util.Locale.US,
+                        "http://localhost:8085/api/v1/location/nearby?latitude=%.6f&longitude=%.6f&radiusKm=3.0", pickupLat, pickupLng);
+
+                org.springframework.http.HttpHeaders headers = new org.springframework.http.HttpHeaders();
+                headers.set("X-Auth-User-Id", String.valueOf(customerId));
+                headers.set("X-Auth-Roles", "ROLE_CUSTOMER");
+                HttpEntity<Void> entity = new HttpEntity<>(headers);
+
+                ResponseEntity<ApiResponse<List<NearbyDriverResponse>>> locationResponse = restTemplate.exchange(
+                        locationUrl,
+                        HttpMethod.GET,
+                        entity,
+                        new ParameterizedTypeReference<ApiResponse<List<NearbyDriverResponse>>>() {
+                        }
+                );
+
+                if (locationResponse.getBody() != null && locationResponse.getBody().getData() != null) {
+                    List<NearbyDriverResponse> nearbyDrivers = locationResponse.getBody().getData();
+
+                    if (!nearbyDrivers.isEmpty()) {
+                        List<String> candidateDriverIds = nearbyDrivers.stream()
+                                .map(NearbyDriverResponse::getDriverId)
+                                .toList();
+
+                        log.info("[DISPATCH FOUND] Tìm thấy {} tài xế khả dụng xung quanh Chuyến #{}: Danh sách ID = {}",
+                                candidateDriverIds.size(), savedTrip.getId(), candidateDriverIds);
+
+                        RideRequestEvent rideRequestEvent = RideRequestEvent.builder()
+                                .tripId(savedTrip.getId())
+                                .customerId(customerId)
+                                .candidateDriverIds(candidateDriverIds)
+                                .pickupAddress(savedTrip.getPickupAddress())
+                                .dropoffAddress(savedTrip.getDropoffAddress())
+                                .fareAmount(fareAmount)
+                                .build();
+
+                        kafkaTemplate.send("ride-request-topic", String.valueOf(savedTrip.getId()), rideRequestEvent);
+
+                        log.info("[KAFKA SUCCESS] Đã bắn tin nổ chuyến sang Kafka topic 'ride-request-topic' cho Chuyến #{} thành công!",
+                                savedTrip.getId());
+                    } else {
+                        log.warn("[DISPATCH NO DRIVER] Không tìm thấy tài xế nào rảnh trong bán kính 3km xung quanh điểm đón của Chuyến #{}",
+                                savedTrip.getId());
+                    }
+                }
+            } catch (Exception e) {
+                log.error("[DISPATCH ERROR] Thất bại khi tìm tài xế hoặc phát chuyến cho Chuyến #{}. Lý do: {}",
+                        savedTrip.getId(), e.getMessage(), e);
+            }
+        } else {
+            log.error("[DISPATCH ABORT] Không thể thực hiện tìm tài xế cho Chuyến #{} do thiếu tọa độ pickupLat/pickupLng!", savedTrip.getId());
         }
 
         return mapToResponse(savedTrip);
@@ -361,7 +429,8 @@ public class TripServiceImpl implements TripService {
                     checkUrl,
                     HttpMethod.GET,
                     entity,
-                    new ParameterizedTypeReference<ApiResponse<WalletBalanceCheckResponse>>() {}
+                    new ParameterizedTypeReference<ApiResponse<WalletBalanceCheckResponse>>() {
+                    }
             );
 
             if (balanceResponse.getBody() != null && balanceResponse.getBody().getData() != null) {
@@ -387,35 +456,6 @@ public class TripServiceImpl implements TripService {
         } catch (Exception e) {
             log.error("[LỖI WALLET SERVICE] Kiểm tra số dư ví thất bại: {}", e.getMessage());
             throw new TripException("Không thể xác thực số dư ví. Vui lòng thử lại sau!");
-        }
-    }
-
-    @Scheduled(fixedRate = 60000) // 1 phút chạy 1 lần
-    @Transactional
-    public void autoCancelExpiredTrips() {
-        LocalDateTime timeout = LocalDateTime.now().minusMinutes(3);
-        List<Trip> expiredTrips = tripRepository.findByStatusAndRequestedAtBefore(TripStatus.Requested, timeout);
-
-        for (Trip trip : expiredTrips) {
-            trip.setStatus(TripStatus.Cancelled);
-            trip.setCancelReason("Hết thời gian chờ . Hệ thống không tìm thấy tài xế phù hợp!");
-            trip.setCancelledBy("Hệ thống");
-            tripRepository.save(trip);
-
-            log.info("[HỆ THỐNG HỦY] Chuyến #{} hết hạn tìm tài xế (quá 3 phút)", trip.getId());
-
-            if ("WALLET".equalsIgnoreCase(String.valueOf(trip.getPaymentMethod()))) {
-                TripCanceledEvent event = TripCanceledEvent.builder()
-                        .tripId(trip.getId())
-                        .customerId(trip.getCustomerId())
-                        .fareAmount(trip.getFareAmount())
-                        .paymentMethod("WALLET")
-                        .cancelReason("Khôn tìm thấy tài xế sau 3 phút")
-                        .cancelledBy("SYSTEM")
-                        .build();
-                kafkaTemplate.send("trip-canceled-topic", event);
-                log.info("[KAFKA SEND] Đã gửi Event Hoàn tiền giữ do Timeout Chuyến #{}", trip.getId());
-            }
         }
     }
 

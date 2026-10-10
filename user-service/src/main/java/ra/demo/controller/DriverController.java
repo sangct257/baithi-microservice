@@ -4,11 +4,9 @@ import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
-import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.*;
 import ra.demo.dto.request.DriverProfileRegisterRequest;
-import ra.demo.dto.request.UpdateDriverStatusRequest;
 import ra.demo.dto.response.ApiResponse;
 import ra.demo.dto.response.DriverProfileResponse;
 import ra.demo.security.principal.CustomUserDetails;
@@ -26,8 +24,8 @@ public class DriverController {
             Authentication authentication,
             @Valid @RequestBody DriverProfileRegisterRequest request) {
 
-        CustomUserDetails userDetails = (CustomUserDetails) authentication.getPrincipal();
-        DriverProfileResponse response = driverService.createOrUpdateProfile(userDetails.getId(), request);
+        Long userId = (Long) authentication.getPrincipal();
+        DriverProfileResponse response = driverService.createOrUpdateProfile(userId, request);
 
         return ResponseEntity.status(HttpStatus.CREATED).body(new ApiResponse<>(
                 true,
@@ -40,8 +38,9 @@ public class DriverController {
 
     @GetMapping("/profile")
     public ResponseEntity<ApiResponse<DriverProfileResponse>> getMyProfile(Authentication authentication) {
-        CustomUserDetails userDetails = (CustomUserDetails) authentication.getPrincipal();
-        DriverProfileResponse response = driverService.getMyProfile(userDetails.getId());
+        Long userId = (Long) authentication.getPrincipal();
+
+        DriverProfileResponse response = driverService.getMyProfile(userId);
 
         return ResponseEntity.ok(new ApiResponse<>(
                 true,
@@ -56,8 +55,8 @@ public class DriverController {
     public ResponseEntity<ApiResponse<DriverProfileResponse>> updateStatus(
             Authentication authentication) {
 
-        CustomUserDetails userDetails = (CustomUserDetails) authentication.getPrincipal();
-        DriverProfileResponse response = driverService.updateStatus(userDetails.getId());
+        Long userId = (Long) authentication.getPrincipal();
+        DriverProfileResponse response = driverService.updateStatus(userId);
 
         return ResponseEntity.ok(new ApiResponse<>(
                 true,

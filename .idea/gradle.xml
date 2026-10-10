@@ -44,6 +44,14 @@
         </option>
       </GradleProjectSettings>
       <GradleProjectSettings>
+        <option name="externalProjectPath" value="$PROJECT_DIR$/location-telemetry-tracking-service" />
+        <option name="modules">
+          <set>
+            <option value="$PROJECT_DIR$/location-telemetry-tracking-service" />
+          </set>
+        </option>
+      </GradleProjectSettings>
+      <GradleProjectSettings>
         <option name="externalProjectPath" value="$PROJECT_DIR$/payment-wallet-service" />
         <option name="modules">
           <set>

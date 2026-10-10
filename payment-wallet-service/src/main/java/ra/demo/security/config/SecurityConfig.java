@@ -11,7 +11,7 @@ import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
 import ra.demo.security.exception.CustomAccessDeniedHandler;
 import ra.demo.security.exception.CustomAuthenticationEntryPoint;
-import ra.demo.security.fillter.HeaderAuthenticationFilter;
+import ra.demo.security.filter.HeaderAuthenticationFilter;
 
 @Configuration
 @EnableWebSecurity

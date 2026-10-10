@@ -14,5 +14,5 @@ jwt-secret: chukibimatdetaorachuoitokenphaidudaineukhongsebinemloi
 services:
   pricing-service:
     url: http://localhost:8083/api/v1/pricing/calculate
-  payment:
+  payment-service:
     url: http://localhost:8084/api/v1/wallets/check-balance

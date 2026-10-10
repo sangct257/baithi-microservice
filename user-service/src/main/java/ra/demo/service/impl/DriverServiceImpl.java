@@ -1,9 +1,12 @@
 package ra.demo.service.impl;
 
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import ra.demo.constants.DriverStatus;
+import ra.demo.dto.request.DriverLocationUpdateRequest;
 import ra.demo.dto.request.DriverProfileRegisterRequest;
 import ra.demo.dto.response.DriverProfileResponse;
 import ra.demo.entity.DriverProfile;
@@ -19,11 +22,13 @@ import ra.demo.service.DriverService;
 
 @Service
 @RequiredArgsConstructor
+@Slf4j
 public class DriverServiceImpl implements DriverService {
 
     private final DriverProfileRepository driverProfileRepository;
     private final UserRepository userRepository;
     private final VehicleRepository vehicleRepository;
+    private final KafkaTemplate<String, Object> kafkaTemplate;
 
     @Override
     @Transactional
@@ -98,14 +103,22 @@ public class DriverServiceImpl implements DriverService {
         }
 
         // 2. Tự động đảo trạng thái: ONLINE -> OFFLINE
-        if (profile.getStatus() == DriverStatus.ONLINE) {
-            profile.setStatus(DriverStatus.OFFLINE);
-        } else {
-            profile.setStatus(DriverStatus.ONLINE);
-        }
+        DriverStatus newStatus = (profile.getStatus() == DriverStatus.ONLINE)
+                ? DriverStatus.OFFLINE
+                : DriverStatus.ONLINE;
+        profile.setStatus(newStatus);
+        driverProfileRepository.save(profile);
 
-        DriverProfile updatedProfile = driverProfileRepository.save(profile);
-        return mapToResponse(updatedProfile);
+        // 2. [BỔ SUNG QUAN TRỌNG] Bắn Kafka đồng bộ sang Location Service
+        DriverLocationUpdateRequest syncRequest = DriverLocationUpdateRequest.builder()
+                .driverId(String.valueOf(userId))
+                .status(newStatus)
+                .build();
+
+        kafkaTemplate.send("driver-status-topic", String.valueOf(userId), syncRequest);
+        log.info("[DRIVER SERVICE] Đã bắn Event đổi trạng thái tài xế #{}: {}", userId, newStatus);
+
+        return mapToResponse(profile);
     }
 
 
